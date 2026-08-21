@@ -142,3 +142,12 @@ coast shows a smooth taper rather than knocking.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Trademarks
+
+Not affiliated with, sponsored by, or endorsed by Seagate Technology LLC.
+"Seagate" and "Barracuda" are trademarks of their respective owners and are used
+here only to identify the specific hardware whose acoustic behaviour was
+measured — a Seagate ST39173W Barracuda 9LP. No Seagate branding, artwork,
+firmware or audio recordings are included in this project; every sound is
+generated from scratch.
