@@ -9,7 +9,7 @@ Makes a silent SSD sound like a 1990s SCSI drive array.
 
 Not samples. Every sound is synthesised from parameters **measured off real
 recordings** of a Seagate ST39173W Barracuda 9LP — 9.1 GB, 7200 rpm, Wide SCSI,
-ball bearings. The daemon watches actual disk I/O through `/>roc/diskstats`, so
+ball bearings. The daemon watches actual disk I/O through `/proc/diskstats`, so
 when it chatters, something really is happening.
 
 ```
