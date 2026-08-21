@@ -74,7 +74,7 @@ rattle        = 0.028    # ball-bearing knock on spin-down
 clicks_per_io = 0.55     # raise it if your NVMe is too quiet to be satisfying
 ```
 
-`distance` exists because the first listener said it sounded like his ear was
+`distance` exists because the first listener said it sounded like her ear was
 against the case. That is a listening position, not a defect — so it became a
 parameter. Enclosure ring dominates up close and the direct transient dominates
 across the room, and the knob interpolates between them.
