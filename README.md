@@ -1,6 +1,9 @@
-# barracuda
+# sea-cuda
 
 Makes a silent SSD sound like a 1990s SCSI drive array.
+
+> *"You'd have some kinda-a-a-a..."* — with apologies to Ann Wilson, who named
+> a Seagate product line in 1977 without knowing it.
 
 Not samples. Every sound is synthesised from parameters **measured off real
 recordings** of a Seagate ST39173W Barracuda 9LP — 9.1 GB, 7200 rpm, Wide SCSI,
@@ -135,3 +138,7 @@ than measured: ball-bearing drives rattle as the lubricating film thins, and
 fluid-dynamic bearings replaced them around 2002, so post-2002 recordings simply
 do not contain it. It is deliberately subtle, because measurement of a real 9LP
 coast shows a smooth taper rather than knocking.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
