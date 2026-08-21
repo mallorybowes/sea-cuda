@@ -2,12 +2,14 @@
 
 Makes a silent SSD sound like a 1990s SCSI drive array.
 
-> *"You'd have some kinda-a-a-a..."* — with apologies to Ann Wilson, who named
+> *"If the real thing don't do the trick <br>
+>   You better make up something quick"* <br>
+> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; — with apologies to Ann Wilson, who named
 > a Seagate product line in 1977 without knowing it.
 
 Not samples. Every sound is synthesised from parameters **measured off real
 recordings** of a Seagate ST39173W Barracuda 9LP — 9.1 GB, 7200 rpm, Wide SCSI,
-ball bearings. The daemon watches actual disk I/O through `/proc/diskstats`, so
+ball bearings. The daemon watches actual disk I/O through `/>roc/diskstats`, so
 when it chatters, something really is happening.
 
 ```
