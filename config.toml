@@ -1,0 +1,72 @@
+# Barracuda drive-sound daemon — configuration
+# Defaults are the measured ST39173W Barracuda 9LP values. Anything you change
+# here takes effect on restart.
+
+[audio]
+volume        = 0.55     # stream level, 0.0-1.0
+# Hold an absolute output level regardless of the system volume, so the array
+# stays background ambience when you turn the music up instead of getting
+# louder with it. Implemented by watching the default sink and inversely
+# adjusting this stream's own volume. Set false to behave like a normal app.
+independent   = true
+independent_level = 0.40 # the absolute level to hold, 0.0-1.0
+independent_poll_s = 2.0 # fallback only - volume changes are event-driven via
+                         # `pactl subscribe`, so this is just a safety net
+device        = "auto"   # "auto" = the disk backing /, or e.g. "nvme0n1"
+sample_rate   = 48000
+
+[drives]
+count         = 4        # phantom spindles. 1 for a lone drive, 8 for the NAS.
+spin_up_mode  = "staggered"  # "staggered" = drives start one after another,
+                             # "together"  = all spindles at once
+stagger       = 3.0      # seconds between spin-ups when staggered. The 8-drive
+                         # cabinet took ~30s to come up; 8 drives x 4.0 = that.
+detune        = 0.0022   # per-drive spindle offset; makes them beat together
+rpm           = 7200     # 5400, 7200, 10000 - drone follows automatically
+
+[character]
+distance      = 1.00     # 0 = ear on the chassis, 1 = across the room
+brightness    = 0.42     # click onset level; raise if it sounds dull
+whine         = 0.30     # bearing/motor tones. 0 = pure spindle drone.
+rattle        = 0.028    # ball-bearing knock on spin-down. Measured: nearly none.
+park_clunk    = 1.15     # actuator slam when a drive is told to stop
+
+[activity]
+# Real drives measured 17-26 clicks/s in ordinary desktop use and ~123/s under
+# a deliberate seek exerciser. clicks_per_io converts observed disk operations
+# into seeks; raise it if your SSD is too quiet to be satisfying.
+clicks_per_io = 0.55
+idle_rate     = 1.5      # clicks/s with no disk activity at all
+max_rate      = 130      # ceiling, so a big copy does not become white noise
+poll_ms       = 40
+
+[behaviour]
+spin_up_on_start = true
+spin_down_on_exit = true
+idle_spindown_s  = 0     # 0 = never. Set e.g. 300 to park after 5 min idle.
+
+# ── Presets ───────────────────────────────────────────────────────────────
+# Select with: barracudad.py --preset coffee_shop
+
+[preset.subtle]
+volume = 0.22
+count = 1
+spin_up_mode = "together"
+whine = 0.15
+clicks_per_io = 0.3
+
+[preset.authentic]
+volume = 0.55
+count = 4
+distance = 1.0
+
+[preset.coffee_shop]
+# For when you want to be asked to leave.
+volume = 1.0
+count = 8
+distance = 0.0           # ear-on-the-chassis hollowness, at volume
+whine = 0.75
+clicks_per_io = 1.6
+max_rate = 220
+stagger = 4.0            # a 32-second spin-up cascade on open
+spin_up_mode = "staggered"

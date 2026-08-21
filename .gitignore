@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+# Working renders. demo/ holds the two committed samples; everything else is
+# generated and does not belong in history.
+/*.wav
+/tmp/
