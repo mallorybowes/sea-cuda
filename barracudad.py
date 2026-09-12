@@ -11,7 +11,7 @@ Seagate ST39173W Barracuda 9LP. See hdmotion-analysis.md for provenance.
   python3 barracudad.py --render out.wav --seconds 30
   python3 barracudad.py --list-devices
 """
-import argparse, errno, os, shutil, signal, subprocess, sys, time, tomllib, wave
+import argparse, errno, fcntl, os, shutil, signal, subprocess, sys, time, tomllib, wave
 import numpy as np
 import barracuda as B
 
@@ -101,6 +101,78 @@ def read_ios(dev):
         if f[2] == dev:
             return int(f[3]) + int(f[7])       # reads + writes completed
     return None
+
+# ── Suspend and resume ────────────────────────────────────────────────────
+# Deliberately NOT a systemd sleep hook. Two reasons, both found the hard way:
+#
+#   1. systemd freezes user.slice *before* running anything in
+#      /usr/lib/systemd/system-sleep, so a user daemon is already stopped by the
+#      time the hook fires and can never make a sound from there. man
+#      systemd-sleep says as much, and points at inhibitor locks instead.
+#   2. Not every distro even looks in /etc/systemd/system-sleep - Debian and
+#      Ubuntu patch systemd to, Arch does not.
+#
+# Hanging it off the compositor's idle daemon fails too: hypridle drops its own
+# inhibitor when the session LOCKS rather than when its command finishes, and
+# the session locks the instant suspend begins.
+#
+# So hold our own delay lock. logind will not begin suspending while one is
+# held, which buys the coast; we drop it ourselves once the array has parked.
+# logind stops waiting after InhibitDelayMaxSec (5s by default), so the coast
+# has to fit inside that - a stuck daemon can delay a suspend, never block it.
+
+def take_sleep_inhibitor():
+    """Hold a delay lock on sleep. Returns a process to kill when done."""
+    try:
+        return subprocess.Popen(
+            ['systemd-inhibit', '--what=sleep', '--mode=delay', '--who=Barracuda',
+             '--why=Parking the array', 'sleep', 'infinity'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+
+def watch_prepare_for_sleep():
+    """Non-blocking stream of logind PrepareForSleep signals."""
+    try:
+        p = subprocess.Popen(
+            ['gdbus', 'monitor', '--system', '--dest', 'org.freedesktop.login1',
+             '--object-path', '/org/freedesktop/login1'],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        os.set_blocking(p.stdout.fileno(), False)
+        return p
+    except OSError:
+        return None
+
+def start_player(fs):
+    """Spawn the audio sink process.
+
+    Restartable on purpose: the suspend drain closes the player outright to get
+    an exact end-of-playback signal, so this has to be callable more than once.
+    """
+    if shutil.which('pw-play'):
+        return subprocess.Popen(
+            ['pw-play', '--raw', '--format=s16', f'--rate={fs}', '--channels=1',
+             '-P', '{ node.name = "Barracuda" media.name = "Barracuda array" '
+                   'application.name = "Barracuda" media.role = "Music" }', '-'],
+            stdin=subprocess.PIPE)
+    return subprocess.Popen(['aplay','-q','-f','S16_LE','-r',str(fs),'-c','1','-'],
+                            stdin=subprocess.PIPE)
+
+SLEEPLOG = os.path.expanduser('~/.barracudad-sleep.log')
+
+def slog(msg):
+    """Log a suspend-cycle event to stderr and to a file.
+
+    A file because the interesting half of a suspend happens after the terminal
+    is gone: if a tail is still audible on resume, these timings say which side
+    of the freeze it came from, which guessing never did.
+    """
+    print(f"  [sleep] {msg}", file=sys.stderr)
+    try:
+        with open(SLEEPLOG, 'a') as f:
+            f.write(time.strftime('%Y-%m-%d %H:%M:%S') + f" {msg}\n")
+    except OSError:
+        pass
 
 class Engine:
     def __init__(self, cfg, rng):
@@ -264,6 +336,11 @@ def main():
     pending = []
     signal.signal(signal.SIGUSR1, lambda *_: pending.append('spindown'))
     signal.signal(signal.SIGUSR2, lambda *_: pending.append('spinup'))
+    # Route SIGTERM through the same shutdown as ctrl-c. Without this, a
+    # `pkill barracudad` leaves the inhibitor process orphaned and every later
+    # suspend pays the full InhibitDelayMaxSec before logind gives up on it.
+    def _term(*_): raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _term)
     try:
         if not os.path.exists(ctlpath): os.mkfifo(ctlpath)
         ctl = os.open(ctlpath, os.O_RDONLY | os.O_NONBLOCK)
@@ -278,17 +355,10 @@ def main():
     # and the independent-volume compensation silently never ran.
     # pw-play takes explicit node properties, so the stream is named, findable,
     # and shows up as "Barracuda" in the system sound settings.
-    if shutil.which('pw-play'):
-        player = subprocess.Popen(
-            ['pw-play', '--raw', f'--format=s16', f'--rate={fs}', '--channels=1',
-             '-P', '{ node.name = "Barracuda" media.name = "Barracuda array" '
-                   'application.name = "Barracuda" media.role = "Music" }', '-'],
-            stdin=subprocess.PIPE)
-    else:
+    if not shutil.which('pw-play'):
         print("  pw-play not found, falling back to aplay "
               "(independent volume will not work)", file=sys.stderr)
-        player = subprocess.Popen(['aplay','-q','-f','S16_LE','-r',str(fs),'-c','1','-'],
-                                  stdin=subprocess.PIPE)
+    player = start_player(fs)
     indep = cfg['audio'].get('independent', False)
     stream = None; last_vol_check = 0.0; last_sink = None
     # Event-driven rather than polled. A 1 s poll meant a quarter-second of the
@@ -305,6 +375,55 @@ def main():
             os.set_blocking(sub.stdout.fileno(), False)
         except Exception:
             sub = None
+    slp = cfg.get('sleep', {})
+    sleep_coast = float(slp.get('coast_s', 3.0))
+    # Audio we have written is not audio that has been played. Whatever is still
+    # in flight when we drop the inhibitor gets frozen with the rest of the
+    # session and plays out on resume - which sounds like the array spinning
+    # down just after you wake the machine.
+    #
+    # Four rounds went into estimating that backlog: pad for the 64 KiB pipe,
+    # add pw-play's declared latency, measure bytes written against elapsed
+    # time, add a constant for the part below the pipe. Every one of them was
+    # arithmetic about a quantity nothing was actually reporting.
+    #
+    # There is a signal. pw-play drains what it has been given and only then
+    # exits, so closing its stdin and waiting for the process to die IS end of
+    # playback - pipe, player queue and sink included, with nothing to know
+    # about any of them. Measured against known durations of audio, process
+    # exit lands 0.047s after the last sample, repeatable to a millisecond, at
+    # both 0.5s (inside the pipe) and 2.0s (over it).
+    #
+    # So: no drain_s, no downstream_s, no sample-rate arithmetic. Close it and
+    # wait for it.
+    #
+    # logind stops honouring delay inhibitors at InhibitDelayMaxSec, 5s by
+    # default, and simply proceeds. Staying inside it is our job, not its, so
+    # the coast is clamped with a second in hand for the drain.
+    if sleep_coast > 3.5:
+        sleep_coast = 3.5
+        print(f"  coast clamped to {sleep_coast:.1f}s, leaving the drain room "
+              "inside logind's InhibitDelayMaxSec", file=sys.stderr)
+    inhibitor = mon = None
+    coast_until = release_ceiling = drain_t0 = None
+    # draining: stopped writing, waiting for the player to finish and exit.
+    # parked:   drained and released, waiting for the freeze. Writing here was
+    #           the bug that survived the last fix - the inhibitor is already
+    #           gone but the machine has not frozen yet, so anything written
+    #           refills the pipe we just emptied and plays back on resume.
+    draining = parked = False
+    if slp.get('inhibit', True):
+        inhibitor, mon = take_sleep_inhibitor(), watch_prepare_for_sleep()
+        if inhibitor is not None and mon is not None:
+            print(f"  parking on suspend, {sleep_coast:.1f}s coast then a "
+                  "drain measured from the player", file=sys.stderr)
+        else:
+            print("  no suspend handling (systemd-inhibit or gdbus missing)",
+                  file=sys.stderr)
+            for pr in (inhibitor, mon):
+                if pr is not None: pr.terminate()
+            inhibitor = mon = None
+
     last = read_ios(dev); last_t = time.time(); rate = cfg['activity']['idle_rate']
     def handle(cmd):
         nonlocal vol
@@ -366,6 +485,68 @@ def main():
                 if sv is not None and sv != last_sink and stream is not None:
                     hold_level(stream, cfg['audio'].get('independent_level', 0.35), sv)
                     last_sink = sv
+            # Suspend on the way down, resume on the way back up.
+            if mon is not None:
+                try:
+                    data = mon.stdout.read()
+                except (BlockingIOError, TypeError, ValueError):
+                    data = None
+                for ln in (data or '').splitlines():
+                    if 'PrepareForSleep' not in ln:
+                        continue
+                    # Match on the argument after the signal name rather than an
+                    # exact "(true,)" - gdbus spacing is not worth depending on.
+                    arg = ln.rsplit('PrepareForSleep', 1)[1]
+                    if 'true' in arg:
+                        slog(f"suspend signalled, {sleep_coast:.1f}s coast")
+                        handle('spindown')
+                        coast_until = now + sleep_coast
+                        # logind stops honouring delay inhibitors at
+                        # InhibitDelayMaxSec (5s default) and simply proceeds.
+                        # Never be the reason a machine is slow to sleep.
+                        release_ceiling = now + 4.5
+                    elif 'false' in arg:
+                        slog("resumed")
+                        handle('spinup')
+                        coast_until = release_ceiling = drain_t0 = None
+                        draining = parked = False
+                        if inhibitor is None or inhibitor.poll() is not None:
+                            inhibitor = take_sleep_inhibitor()
+            # Coast is over. Stop writing and close the player: the whole coast
+            # is already queued, and the only thing left is to let it be heard.
+            if coast_until is not None and now >= coast_until:
+                coast_until = None
+                draining = True; drain_t0 = now
+                try: player.stdin.close()
+                except OSError: pass
+            # Let go when the sound has actually finished - process exit is the
+            # signal - or at the ceiling if the player somehow never dies. A
+            # delay inhibitor must never be why a laptop is slow to sleep.
+            if draining:
+                done = player.poll() is not None
+                if not (done or (release_ceiling and now >= release_ceiling)):
+                    # Nothing to write, so nothing is pacing the loop - sleep,
+                    # or this spins a core flat out waiting for the suspend.
+                    time.sleep(0.01)
+                    continue
+                slog(f"drained in {now - drain_t0:.3f}s" if done else
+                     f"CEILING HIT at {now - drain_t0:.3f}s, player still alive "
+                     "- releasing anyway, expect a tail")
+                draining = False; parked = True; release_ceiling = None
+                if not done:
+                    player.terminate()
+                if inhibitor is not None:
+                    inhibitor.terminate(); inhibitor = None
+                # Back on its feet before the freeze rather than after it, so a
+                # resume signal that never arrives cannot leave the daemon mute.
+                player = start_player(fs)
+                stream = last_sink = None          # new stream, re-apply volume
+                slog("inhibitor released, parked")
+            if parked:
+                # Released but not yet frozen. Writing now would refill the pipe
+                # we just emptied, and that is exactly what plays back on resume.
+                time.sleep(0.05)
+                continue
             b = eng.block(BLK, rate)*vol
             np.clip(b, -1, 1, out=b)
             player.stdin.write((b*32767).astype('<i2').tobytes())
@@ -379,8 +560,10 @@ def main():
                 np.clip(b, -1, 1, out=b)
                 player.stdin.write((b*32767).astype('<i2').tobytes())
         player.stdin.close(); player.wait()
-        if sub is not None:
-            sub.terminate()
+        for pr in (sub, mon, inhibitor):
+            if pr is not None:
+                try: pr.terminate()
+                except OSError: pass
         for f in (pidfile, ctlpath):
             try: os.unlink(f)
             except OSError: pass

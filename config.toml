@@ -40,6 +40,22 @@ idle_rate     = 1.5      # clicks/s with no disk activity at all
 max_rate      = 130      # ceiling, so a big copy does not become white noise
 poll_ms       = 40
 
+[sleep]
+# Park the array audibly before the machine suspends, and spin it back up on
+# resume. Works by holding a systemd delay inhibitor, so no root, no sleep
+# hook, no per-distro install step. See barracudad.py for why a sleep hook
+# cannot do this.
+inhibit       = true
+coast_s       = 3.0      # audible coast before letting the suspend proceed.
+                         # Clamped to 3.5s: logind stops honouring delay
+                         # inhibitors at InhibitDelayMaxSec (5s default), and
+                         # the drain needs room inside that.
+                         #
+                         # There is deliberately no drain setting. The daemon
+                         # closes the player and waits for it to exit, which is
+                         # the real end of playback - pipe, player and sink all
+                         # included - so there is no number here to get wrong.
+
 [behaviour]
 spin_up_on_start = true
 spin_down_on_exit = true

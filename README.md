@@ -112,13 +112,56 @@ else.
 
 ### Suspend
 
+Nothing to install. The daemon parks the array as the machine goes down and
+spins it up on resume, controlled by `[sleep]` in `config.toml`.
+
+It does this by holding a **systemd delay inhibitor** and watching logind's
+`PrepareForSleep`, rather than by dropping a script in `system-sleep/`. A sleep
+hook cannot work here: systemd freezes `user.slice` *before* running those
+hooks, so a user daemon is already stopped by the time one fires and never
+makes a sound. `man systemd-sleep` says so, and points at inhibitor locks
+instead. (Distros also disagree about the path — Debian and Ubuntu read
+`/etc/systemd/system-sleep`, Arch only `/usr/lib/systemd/system-sleep`, so the
+hook silently no-ops on half the world.)
+
+The coast has to fit inside logind's `InhibitDelayMaxSec`, 5 seconds by
+default; `coast_s` defaults to 3.0, and is clamped to 3.5 to leave the drain
+room. A delay inhibitor can only ever *delay* a suspend, never block it, so a
+wedged daemon costs you five seconds at worst.
+
+**Why there is no drain setting.** Audio you have written is not audio that has
+been played. Anything still queued when the inhibitor drops gets frozen with
+the rest of the session and plays back on resume — which sounds like the array
+spinning down just *after* you wake the machine. Four rounds went into
+estimating that backlog (pad for the 64 KiB pipe, add the player's declared
+latency, measure bytes written against elapsed time, add a constant for the
+part below the pipe) and every one of them was arithmetic about a quantity
+nothing was reporting.
+
+There is a signal. `pw-play` drains what it has been given and only then exits,
+so closing its stdin and waiting for the process to die *is* end of playback —
+pipe, player queue and sink included, with nothing to know about any of them.
+Measured against known durations, process exit lands 0.047 s after the last
+sample, repeatable to a millisecond, both inside the pipe and over it. So the
+daemon closes the player and waits, and there is no number here to get wrong.
+
+Two things that are easy to get wrong if you reimplement this: keep writing
+during the wait and the pipe is refilled as fast as it drains, so the wait
+accomplishes nothing; and resume writing the moment the inhibitor is released
+and you refill it again in the window before the machine actually freezes. The
+daemon stops writing for both — `draining`, then `parked`.
+
+Suspend events are logged with timings to `~/.barracudad-sleep.log`, which is
+the file to look at if a tail ever comes back:
+
 ```
-sudo install -m 755 barracuda-sleep-hook.sh /etc/systemd/system-sleep/barracuda
+suspend signalled, 3.0s coast
+drained in 0.733s
+inhibitor released, parked
+resumed
 ```
 
-Parks the array as the machine goes down, spins it up on resume. Every path in
-the hook is bounded — a sleep hook that blocks would hang suspend, which is a
-much worse bug than a missing sound effect.
+`barracuda-sleep-hook.sh` is kept for systems without logind.
 
 ## Requirements
 
