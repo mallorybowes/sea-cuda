@@ -163,6 +163,36 @@ resumed
 
 `barracuda-sleep-hook.sh` is kept for systems without logind.
 
+## Start it on login
+
+```
+cp barracudad.service ~/.config/systemd/user/
+$EDITOR ~/.config/systemd/user/barracudad.service   # point ExecStart at your checkout
+systemctl --user daemon-reload
+systemctl --user enable --now barracudad
+```
+
+A **user** service, not a system one: it needs your PipeWire session and holds
+a logind sleep inhibitor on your behalf, neither of which exists before you log
+in. It is tied to `graphical-session.target`, so it starts with the desktop and
+stops with it.
+
+`journalctl --user -u barracudad` is then where the diagnostics live, which
+matters most for suspend: the interesting half of a suspend happens after the
+terminal is gone.
+
+Two settings in the unit are load-bearing and should not be trimmed:
+
+| setting | why |
+| --- | --- |
+| `KillMode=mixed` | The default, `control-group`, SIGTERMs every process in the cgroup **including `pw-play`**. The player would die alongside the daemon and the wind-down would go into a dead pipe: no park sound on logout, and a `BrokenPipeError` in the journal. `mixed` signals only the daemon, which then parks the array and waits for the player to drain. |
+| `TimeoutStopSec=30` | The park takes about 8.5s of real time to play. Measured stop-to-stopped is ~10s. |
+
+Once it runs under systemd, prefer `systemctl --user restart barracudad` over
+`barracuda-ctl.sh start`. The script still works - and the daemon's singleton
+lock means a stray `start` refuses cleanly rather than fighting the service -
+but systemd will consider the unit inactive while a script-started daemon runs.
+
 ## Requirements
 
 Python 3.11+, `numpy`, `scipy` (analysis only), PipeWire with `pw-play` and

@@ -1,0 +1,44 @@
+# Barracuda drive-sound daemon, as a systemd user service.
+#
+#   cp barracudad.service ~/.config/systemd/user/
+#   # adjust ExecStart below to wherever you cloned this
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now barracudad
+#
+# A USER service, not a system one: it needs your PipeWire session, and it
+# holds a logind sleep inhibitor on your behalf. Neither works from a system
+# unit running before you log in.
+
+[Unit]
+Description=Barracuda drive-sound daemon
+Documentation=https://github.com/mallorybowes/sea-cuda
+# Tied to the graphical session, so it stops cleanly at logout instead of
+# lingering with no audio sink to write to.
+PartOf=graphical-session.target
+After=graphical-session.target pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+# Adjust this path to your checkout. %h is your home directory.
+ExecStart=/usr/bin/python3 %h/Projects/sea-cuda/barracudad.py --preset subtle
+
+# KillMode=mixed is load-bearing, for the same reason the daemon spawns its
+# player with start_new_session.
+#
+# The default, control-group, sends SIGTERM to EVERY process in the unit's
+# cgroup - which includes pw-play. The player would die alongside the daemon,
+# and the wind-down the daemon writes on SIGTERM would go into a dead pipe:
+# no park sound on logout, and a BrokenPipeError in the journal.
+#
+# mixed signals only the main process. The daemon then parks the array, closes
+# the pipe and waits for the player to drain, exactly as it does for ctrl-c.
+KillMode=mixed
+# The park takes about 8.5s of real time to play out. Well inside the 90s
+# default, but stated so nobody trims it without knowing.
+TimeoutStopSec=30
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
