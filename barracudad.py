@@ -343,7 +343,35 @@ def main():
     #   echo 'spindown'    > ~/.barracudad.ctl
     pidfile = os.path.expanduser('~/.barracudad.pid')
     ctlpath = os.path.expanduser('~/.barracudad.ctl')
-    open(pidfile, 'w').write(str(os.getpid()))
+    # Singleton guard. A second instance used to adopt the first's pid file and
+    # control fifo and then delete both on its way out, which silently broke the
+    # running daemon's control channel and left `stop` aimed at a dead pid.
+    #
+    # flock rather than "read the pid and check whether it is alive": the kernel
+    # holds the lock for the life of the process and drops it on any death,
+    # SIGKILL included. Nothing to clean up, and no liveness heuristic for a
+    # recycled pid to fool.
+    #
+    # O_CREAT without O_TRUNC is the important part. The old code opened with
+    # 'w', which truncates immediately - so a second instance destroyed the
+    # owner's pid file merely by starting, before any check could run.
+    pidfd = os.open(pidfile, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(pidfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            other = os.read(pidfd, 32).decode(errors='replace').strip() or '?'
+        except OSError:
+            other = '?'
+        # Exit without touching the pid file or the fifo: the loser has to be
+        # inert. SystemExit also skips the shutdown path, which unlinks both.
+        sys.exit(f"barracudad is already running (pid {other}).\n"
+                 f"  stop it with:  barracuda-ctl.sh stop\n"
+                 f"  or run a second, isolated one:  "
+                 f"HOME=/tmp/barracuda-test {sys.argv[0]}")
+    os.ftruncate(pidfd, 0)
+    os.write(pidfd, str(os.getpid()).encode())
+    # pidfd is deliberately never closed - closing it would release the lock.
     pending = []
     signal.signal(signal.SIGUSR1, lambda *_: pending.append('spindown'))
     signal.signal(signal.SIGUSR2, lambda *_: pending.append('spinup'))
