@@ -148,15 +148,26 @@ def start_player(fs):
 
     Restartable on purpose: the suspend drain closes the player outright to get
     an exact end-of-playback signal, so this has to be callable more than once.
+
+    start_new_session puts the player in its own process group, and that is
+    load-bearing. Ctrl-C sends SIGINT to the whole foreground process group, so
+    a player spawned into ours died first and spin_down_on_exit then wrote to a
+    dead pipe - which meant the park sound never played on exit and you got a
+    BrokenPipeError traceback instead. Out of the group, the player outlives the
+    interrupt exactly long enough to play the wind-down.
+
+    It cannot be orphaned by this: the player reads our pipe, so whatever kills
+    the daemon - even SIGKILL - closes the write end, and the player exits on
+    EOF.
     """
     if shutil.which('pw-play'):
         return subprocess.Popen(
             ['pw-play', '--raw', '--format=s16', f'--rate={fs}', '--channels=1',
              '-P', '{ node.name = "Barracuda" media.name = "Barracuda array" '
                    'application.name = "Barracuda" media.role = "Music" }', '-'],
-            stdin=subprocess.PIPE)
+            stdin=subprocess.PIPE, start_new_session=True)
     return subprocess.Popen(['aplay','-q','-f','S16_LE','-r',str(fs),'-c','1','-'],
-                            stdin=subprocess.PIPE)
+                            stdin=subprocess.PIPE, start_new_session=True)
 
 SLEEPLOG = os.path.expanduser('~/.barracudad-sleep.log')
 
