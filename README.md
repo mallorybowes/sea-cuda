@@ -166,6 +166,14 @@ resumed
 ## Start it on login
 
 ```
+./setup.sh --install          # or: ./setup.sh --install subtle
+```
+
+That checks the dependencies first, refuses if anything required is missing,
+and writes `ExecStart` from the checkout it is run out of — the one path in the
+unit, and the easiest thing to get wrong by hand. By hand instead:
+
+```
 cp barracudad.service ~/.config/systemd/user/
 $EDITOR ~/.config/systemd/user/barracudad.service   # point ExecStart at your checkout
 systemctl --user daemon-reload
@@ -195,8 +203,29 @@ but systemd will consider the unit inactive while a script-started daemon runs.
 
 ## Requirements
 
-Python 3.11+, `numpy`, `scipy` (analysis only), PipeWire with `pw-play` and
-`pactl`. Linux; reads `/proc/diskstats`.
+Linux, and it reads `/proc/diskstats`. Run `./setup.sh` to check all of this at
+once — it reports what is missing and, more usefully, **what will silently stop
+working** if it is.
+
+| Need | Without it | Arch | Debian/Ubuntu | Fedora |
+| --- | --- | --- | --- | --- |
+| Python 3.11+ | will not run — `tomllib` reads `config.toml` | `python` | `python3` | `python3` |
+| `numpy` | will not run — the synthesis engine is numpy | `python-numpy` | `python3-numpy` | `python3-numpy` |
+| `pw-play` | falls back to `aplay`; **independent volume stops working**, because the ALSA layer ignores the stream name the lookup needs | `pipewire-audio` | `pipewire-bin` | `pipewire-utils` |
+| `pactl` | **independent volume stops working** | `libpulse` | `pulseaudio-utils` | `pulseaudio-utils` |
+| `gdbus` | **no suspend handling at all** — the array will not park before sleep | `glib2` | `libglib2.0-bin` | `glib2` |
+| `systemd-inhibit` | **no suspend handling at all** | `systemd` | `systemd` | `systemd` |
+| `scipy` | nothing — `analyse_drive.py` only, the daemon never imports it | `python-scipy` | `python3-scipy` | `python3-scipy` |
+
+Arch column verified against a working install; the others are the usual names
+for those tools.
+
+The bolded rows are the reason `setup.sh` exists. Those three failures are
+quiet — the daemon starts, makes drive noises, and mentions the problem once on
+stderr. Under the systemd service that stderr is the journal, so it is
+entirely possible to run this for weeks without noticing the suspend feature
+disabled itself on day one.
+
 
 Desktop-agnostic by design: it is a daemon, not a panel applet, so it runs the
 same on GNOME, KDE, COSMIC, i3 or a bare session.
